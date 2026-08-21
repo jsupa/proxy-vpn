@@ -2,7 +2,7 @@
   "name": "wg-easy-proxy",
   "version": "1.0.0",
   "private": true,
-  "description": "WireGuard (wg-easy) + tun2socks — premávka WG klientov cez SOCKS5 proxy",
+  "description": "WireGuard (wg-easy) + tun2socks — WG client traffic via SOCKS5/HTTP proxy",
   "scripts": {
     "docker:build": "VERSION=$(node -p \"require('./package.json').version\") && docker build --platform linux/amd64 -t reg.kubov.link/ezworkz/wg-easy-proxy:${VERSION} .",
     "docker:push": "VERSION=$(node -p \"require('./package.json').version\") && docker push reg.kubov.link/ezworkz/wg-easy-proxy:${VERSION}",

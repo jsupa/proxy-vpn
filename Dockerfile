@@ -1,10 +1,10 @@
 FROM ghcr.io/wg-easy/wg-easy:latest
 
-# iproute2 = plnohodnotný `ip` (busybox v Alpine nevie `ip rule`/routovacie tabuľky),
-# unzip + curl pre tun2socks
+# iproute2 = full-featured `ip` (Alpine's busybox lacks `ip rule`/routing tables),
+# unzip + curl for tun2socks
 RUN apk add --no-cache iproute2 unzip curl
 
-# tun2socks — tuneluje premávku WG klientov do SOCKS5 proxy
+# tun2socks — tunnels WG client traffic into the proxy
 RUN curl -fL -o /tmp/tun2socks.zip \
       https://github.com/xjasonlyu/tun2socks/releases/download/v2.7.0/tun2socks-linux-amd64.zip \
     && unzip /tmp/tun2socks.zip -d /tmp/tun2socks \
@@ -16,5 +16,5 @@ COPY start-proxy.sh /start-proxy.sh
 COPY tun-post-up.sh /tun-post-up.sh
 RUN chmod +x /start-proxy.sh /tun-post-up.sh
 
-# Štart cez náš skript (tun2socks + policy routing), wg-easy sa spustí na jeho konci
+# Start via our script (tun2socks + policy routing); wg-easy starts at its end
 ENTRYPOINT ["/start-proxy.sh"]

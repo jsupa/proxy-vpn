@@ -1,20 +1,20 @@
 #!/bin/sh
 
-# Premávka z WireGuard klientov -> tun2socks -> SOCKS5/HTTP proxy (Egypt).
-# Beží ako ENTRYPOINT kontajnera; na konci spustí pôvodnú wg-easy aplikáciu.
+# WireGuard client traffic -> tun2socks -> SOCKS5/HTTP proxy (Egypt).
+# Runs as the container ENTRYPOINT; at the end it starts the original wg-easy app.
 #
-# POZOR na tun2socks v2.7.0:
-#  - dlhé flagy len s DVOJITOU pomlčkou (pflag parser)
-#  - --tun-post-up spúšťa príkaz BEZ shellu (shlex → exec) — preto cesta k skriptu
+# NOTE for tun2socks v2.7.0:
+#  - long flags only with DOUBLE dashes (pflag parser)
+#  - --tun-post-up runs the command WITHOUT a shell (shlex -> exec) — hence a script path
 
-WG_SUBNET="${WG_SUBNET:-10.8.0.0/24}"   # musí sedieť s WG_DEFAULT_ADDRESS (10.8.0.x)
+WG_SUBNET="${WG_SUBNET:-10.8.0.0/24}"   # must match WG_DEFAULT_ADDRESS (10.8.0.x)
 TUN_DEV="${TUN_DEV:-tun1}"
 TUN_TABLE="${TUN_TABLE:-100}"
 
-# 1. tun2socks s watchdogom: ak spadne (proxy nedostupná...), reštartuje sa.
-#    Počas výpadku premávka klientov stojí (fail-closed) — nikdy neunikne mimo proxy.
-#    Routing nastavuje /tun-post-up.sh — tun2socks ho spúšťa pri každom vytvorení tun,
-#    takže po reštarte tun2socksu (znovuvytvorený tun1) sa pravidlá obnovia samé.
+# 1. tun2socks with a watchdog: if it dies (proxy unreachable...), it restarts.
+#    During the outage client traffic stops (fail-closed) — never leaks outside the proxy.
+#    Routing is set up by /tun-post-up.sh — tun2socks runs it on every TUN creation,
+#    so after a tun2socks restart (recreated tun1) the rules come back automatically.
 (
   while :; do
     tun2socks \
@@ -22,13 +22,13 @@ TUN_TABLE="${TUN_TABLE:-100}"
       --proxy "$PROXY_URL" \
       --loglevel info \
       --tun-post-up /tun-post-up.sh
-    echo "tun2socks skončil — reštart o 3 s..." >&2
+    echo "tun2socks exited — restarting in 3 s..." >&2
     sleep 3
   done
 ) &
 
-# 2. Počkáme, kým tun2socks vytvorí zariadenie a post-up skript pridá routing
-#    (pravidlo v policy routing A route v tabuľke).
+# 2. Wait until tun2socks creates the device and the post-up script adds the routing
+#    (policy routing rule AND route in the table).
 i=0
 while [ "$i" -lt 30 ]; do
   if ip rule show | grep -q "from $WG_SUBNET" \
@@ -40,11 +40,11 @@ while [ "$i" -lt 30 ]; do
 done
 if ! ip rule show | grep -q "from $WG_SUBNET" \
    || ! ip route show table "$TUN_TABLE" | grep -q default; then
-  echo "Chyba: routovanie nevzniklo — skontroluj PROXY_URL a logy tun2socks." >&2
+  echo "Error: routing was not set up — check PROXY_URL and tun2socks logs." >&2
   exit 1
 fi
 
-# 3. Pôvodná wg-easy aplikácia (dumb-init ako PID 1, rovnaký CMD ako base obraz).
+# 3. Original wg-easy app (dumb-init as PID 1, same CMD as the base image).
 cd /app || exit 1
 if [ -f server/index.mjs ]; then
   exec /usr/bin/dumb-init node server/index.mjs

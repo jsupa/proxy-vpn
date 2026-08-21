@@ -1,15 +1,15 @@
 #!/bin/sh
-# Spúšťa tun2socks po vytvorení TUN zariadenia (--tun-post-up).
-# tun2socks spúšťa príkaz BEZ shellu (shlex → exec), preto cesta k skriptu so shebangom.
-# Idempotentné (del+add / replace) — pri reštarte tun2socksu sa tun1 znovuvytvorí
-# a pravidlá sa obnovia nanovo.
+# Runs after tun2socks creates the TUN device (--tun-post-up).
+# tun2socks executes the command WITHOUT a shell (shlex -> exec), hence a script path with shebang.
+# Idempotent (del+add / replace) — when tun2socks restarts, tun1 is recreated
+# and the rules are restored from scratch.
 
-# chyby presmerujeme na stderr PID 1 (docker logs) — tun2socks stderr zahadzuje
+# forward errors to PID 1's stderr (docker logs) — tun2socks discards its own stderr
 if [ -w /proc/1/fd/2 ]; then
   exec 2>/proc/1/fd/2
 fi
 
-WG_SUBNET="${WG_SUBNET:-10.8.0.0/24}"   # musí sedieť s WG_DEFAULT_ADDRESS (10.8.0.x)
+WG_SUBNET="${WG_SUBNET:-10.8.0.0/24}"   # must match WG_DEFAULT_ADDRESS (10.8.0.x)
 TUN_DEV="${TUN_DEV:-tun1}"
 TUN_TABLE="${TUN_TABLE:-100}"
 

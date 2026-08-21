@@ -6,22 +6,23 @@ services:
       - NET_ADMIN
       - SYS_MODULE
     devices:
-      - /dev/net/tun:/dev/net/tun        # tun2socks potrebuje TUN zariadenie hosta
+      - /dev/net/tun:/dev/net/tun        # tun2socks needs the host's TUN device
     sysctls:
       - net.ipv4.ip_forward=1
       - net.ipv4.conf.all.src_valid_mark=1
-      # tun2socks: return pakety z tun1 prichádzajú s inou zdrojovou IP, než akou vyšli von
+      # tun2socks: return packets from tun1 arrive with a different source IP
+      # than the one they left with
       - net.ipv4.conf.all.rp_filter=0
       - net.ipv4.conf.default.rp_filter=0
     ports:
       - "51820:51820/udp"                     # WireGuard
-      - "127.0.0.1:51821:51821/tcp"           # web admin — lokálne, cez SSH tunel
+      - "127.0.0.1:51821:51821/tcp"           # web admin — localhost only, via SSH tunnel
     environment:
-      - WG_HOST=${VPS_IP}                     # verejná IP VPS
-      - PASSWORD_HASH=${PASSWORD_HASH}        # bcrypt hash (v14+; wgpw 'heslo')
-      - PROXY_URL=${PROXY_URL}                # socks5://uzivatel:heslo@ip_egypt_proxy:port
-      - WG_DEFAULT_DNS=1.1.1.1                # DNS klientov ide cez tunel (bez leaku)
-      - WG_SUBNET=10.8.0.0/24                 # číta start-proxy.sh; musí sedieť s WG_DEFAULT_ADDRESS
+      - WG_HOST=${VPS_IP}                     # VPS public IP
+      - PASSWORD_HASH=${PASSWORD_HASH}        # bcrypt hash (v14+; wgpw 'password')
+      - PROXY_URL=${PROXY_URL}                # http://user:pass@egypt_proxy:port
+      - WG_DEFAULT_DNS=1.1.1.1                # client DNS goes through the tunnel (no leaks)
+      - WG_SUBNET=10.8.0.0/24                 # read by start-proxy.sh; must match WG_DEFAULT_ADDRESS
       - TZ=Europe/Bratislava
     volumes:
       - ./wg-data:/etc/wireguard
