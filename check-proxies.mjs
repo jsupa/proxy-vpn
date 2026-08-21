@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 // Kontrola krajiny proxy zo zoznamu.
 //
-// Vstup:  `node check-proxies.mjs [proxies.txt] [--proto auto|http|socks5] [--csv subor.csv]`
+// Vstup:  `node check-proxies.mjs [proxies.txt] [--proto auto|http|socks5] [--geo ip-api|ip2location] [--csv subor.csv]`
 //         bez súboru číta proxies.txt (ak existuje), inak stdin.
 // Riadky: ip:port:user:pass | ip:port | socks5://user:pass@ip:port  (# = komentár)
 //
 // Geo detekcia ide CEZ samotný proxy (výsledok = krajina exit uzla):
-//   1. ip-api.com/json (country + countryCode + query v jednom requeste)
-//   2. fallback ipinfo.io/json + ipinfo.io/country (https)
+//   1. ip-api.com/json (default — pre hosting IP presnejší exit)
+//   2. api.ip2location.io (bez key: 1 000 dopytov/deň; kľúč: env IP2LOCATION_KEY)
+// Prepneš cez --geo ip2location (vhodné keď databázy nesúhlasia — porovnaj výsledky).
 // --proto auto skúša najprv HTTP proxy, potom SOCKS5.
 
 import { execFile } from 'node:child_process';
@@ -52,6 +53,19 @@ function curlArgs(p, proto, url) {
   return args;
 }
 
+async function geoIp2location(p, proto) {
+  const key = process.env.IP2LOCATION_KEY ? `?key=${process.env.IP2LOCATION_KEY}` : '';
+  const r = await execFileP('curl', curlArgs(p, proto, `https://api.ip2location.io/${key}`));
+  const j = JSON.parse(r.stdout);
+  if (!j.ip) throw new Error('ip2location: zlá odpoveď');
+  return {
+    country: j.country_name || j.country_code || '?',
+    countryCode: j.country_code || '',
+    city: j.city_name || '',
+    exitIp: j.ip,
+  };
+}
+
 async function geoIpApi(p, proto) {
   const r = await execFileP('curl', curlArgs(p, proto, 'http://ip-api.com/json'));
   const j = JSON.parse(r.stdout);
@@ -59,23 +73,13 @@ async function geoIpApi(p, proto) {
   return { country: j.country, countryCode: j.countryCode, city: j.city, exitIp: j.query };
 }
 
-async function geoIpinfo(p, proto) {
-  const [jsonRes, nameRes] = await Promise.all([
-    execFileP('curl', curlArgs(p, proto, 'https://ipinfo.io/json')),
-    execFileP('curl', curlArgs(p, proto, 'https://ipinfo.io/country')),
-  ]);
-  const j = JSON.parse(jsonRes.stdout);
-  if (!j.ip) throw new Error('ipinfo: zlá odpoveď');
-  const name = nameRes.stdout.trim();
-  return { country: name || j.country || '?', countryCode: j.country || '', city: j.city || '', exitIp: j.ip };
-}
-
-async function geoLookup(p, protoMode) {
+async function geoLookup(p, protoMode, geoMode) {
   const protos = protoMode === 'auto' ? ['http', 'socks5h'] : [protoMode];
+  const apis = geoMode === 'ip2location' ? [geoIp2location, geoIpApi] : [geoIpApi, geoIp2location];
   const start = Date.now();
   let lastErr;
   for (const proto of protos) {
-    for (const api of [geoIpApi, geoIpinfo]) {
+    for (const api of apis) {
       try {
         const geo = await api(p, proto);
         return { status: 'OK', ...geo, proto, latencyMs: Date.now() - start };
@@ -98,7 +102,13 @@ function getInput() {
     console.error(`Neznámy protokol: ${protoMode} (auto|http|socks5)`);
     process.exit(1);
   }
-  const fileArg = args.find(a => !a.startsWith('--') && a !== args[csvIdx + 1] && a !== args[protoIdx + 1]);
+  const geoIdx = args.indexOf('--geo');
+  const geoMode = geoIdx >= 0 ? args[geoIdx + 1] : 'ip-api';
+  if (geoMode && !['ip-api', 'ip2location'].includes(geoMode)) {
+    console.error(`Neznáme geo API: ${geoMode} (ip-api|ip2location)`);
+    process.exit(1);
+  }
+  const fileArg = args.find(a => !a.startsWith('--') && a !== args[csvIdx + 1] && a !== args[protoIdx + 1] && a !== args[geoIdx + 1]);
 
   let text;
   if (fileArg) {
@@ -118,28 +128,28 @@ function getInput() {
     console.error('Žiadne proxy na vstupe.');
     process.exit(1);
   }
-  return { proxies, csvPath, protoMode: protoMode === 'socks5' ? 'socks5h' : protoMode };
+  return { proxies, csvPath, protoMode: protoMode === 'socks5' ? 'socks5h' : protoMode, geoMode };
 }
 
 const pad = (s, n) => String(s).padEnd(n);
 
 async function main() {
-  const { proxies, csvPath, protoMode } = getInput();
-  console.log(`Kontrolujem ${proxies.length} proxy (proto: ${protoMode === 'socks5h' ? 'socks5' : protoMode})...\n`);
+  const { proxies, csvPath, protoMode, geoMode } = getInput();
+  console.log(`Kontrolujem ${proxies.length} proxy (proto: ${protoMode === 'socks5h' ? 'socks5' : protoMode}, geo: ${geoMode})...\n`);
 
   const results = [];
   for (let i = 0; i < proxies.length; i += CONCURRENCY) {
     const batch = proxies.slice(i, i + CONCURRENCY);
-    results.push(...(await Promise.all(batch.map(p => geoLookup(p, protoMode)))));
+    results.push(...(await Promise.all(batch.map(p => geoLookup(p, protoMode, geoMode)))));
   }
 
-  console.log(pad('proxy', 30) + pad('status', 7) + pad('country', 24) + pad('exit IP', 17) + pad('proto', 7) + 'time');
+  console.log(pad('proxy', 30) + pad('status', 7) + pad('country', 30) + pad('exit IP', 17) + pad('proto', 7) + 'time');
   proxies.forEach((p, i) => {
     const r = results[i];
     const label = `${p.host}:${p.port}`;
     if (r.status === 'OK') {
       console.log(
-        pad(label, 30) + pad('OK', 5) + pad(`${r.country} (${r.countryCode})`, 24) +
+        pad(label, 30) + pad('OK', 5) + pad(`${r.country} (${r.countryCode})`, 30) +
         pad(r.exitIp, 17) + pad(r.proto === 'socks5h' ? 'socks5' : r.proto, 7) +
         `${(r.latencyMs / 1000).toFixed(1)}s`
       );

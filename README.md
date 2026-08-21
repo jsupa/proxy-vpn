@@ -70,14 +70,17 @@ samotný proxy, takže výsledok je krajina exit uzla.
 ```bash
 # 1. Ulož proxy do proxies.txt (jeden na riadok: ip:port:user:pass)
 # 2. Spusti:
-pnpm proxies:check proxies.txt                 # auto-detect: najprv HTTP, potom SOCKS5
-pnpm proxies:check proxies.txt --proto http    # vynútený protokol (http|socks5)
+pnpm proxies:check proxies.txt                     # auto-detect: najprv HTTP, potom SOCKS5
+pnpm proxies:check proxies.txt --proto http        # vynútený protokol (http|socks5)
+pnpm proxies:check proxies.txt --geo ip2location   # ip2location.io databáza (default: ip-api)
 pnpm proxies:check proxies.txt --csv vysledky.csv
 ```
 
 Výstup: tabuľka (proxy, krajina, exit IP, protokol, čas odozvy) + zhrnutie podľa krajín.
-Geo API: primárne ip-api.com, fallback ipinfo.io. `proxies.txt` je v `.gitignore` —
-credentialy necommitovať.
+Geo API: default **ip-api.com** (presnejší exit pre hosting IP — pri niektorých
+provideroch vracia ip2location len registračnú adresu IP); prepneš na api.ip2location.io
+cez `--geo ip2location` (bez kľúča 1 000 dopytov/deň; free kľúč 50K/mesiac cez env
+`IP2LOCATION_KEY=...`). `proxies.txt` je v `.gitignore` — credentialy necommitovať.
 
 ## Ako to funguje
 
