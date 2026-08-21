@@ -1,0 +1,174 @@
+#!/usr/bin/env node
+// Kontrola krajiny proxy zo zoznamu.
+//
+// Vstup:  `node check-proxies.mjs [proxies.txt] [--proto auto|http|socks5] [--csv subor.csv]`
+//         bez súboru číta proxies.txt (ak existuje), inak stdin.
+// Riadky: ip:port:user:pass | ip:port | socks5://user:pass@ip:port  (# = komentár)
+//
+// Geo detekcia ide CEZ samotný proxy (výsledok = krajina exit uzla):
+//   1. ip-api.com/json (country + countryCode + query v jednom requeste)
+//   2. fallback ipinfo.io/json + ipinfo.io/country (https)
+// --proto auto skúša najprv HTTP proxy, potom SOCKS5.
+
+import { execFile } from 'node:child_process';
+import { readFileSync, existsSync, writeFileSync } from 'node:fs';
+import { promisify } from 'node:util';
+
+const execFileP = promisify(execFile);
+const CONCURRENCY = 10;
+
+const CURL_ERRORS = {
+  5: 'proxy neexistuje (DNS)',
+  7: 'nedostupné',
+  22: 'HTTP chyba',
+  28: 'timeout',
+  56: 'recv/auth chyba',
+  97: 'SOCKS auth zlyhal',
+};
+
+function parseProxy(line) {
+  const t = line.trim();
+  if (!t || t.startsWith('#')) return null;
+  let host, port, user = '', pass = '';
+  if (t.includes('://')) {
+    const u = new URL(t);
+    host = u.hostname; port = u.port; user = u.username; pass = u.password;
+  } else {
+    const parts = t.split(':');
+    [host, port, user = '', pass = ''] = parts;
+  }
+  if (!host || !port) return null;
+  return { host, port, user, pass };
+}
+
+// curl s proxy auth cez --proxy-user (bezpečné aj pre špeciálne znaky v heslách)
+function curlArgs(p, proto, url) {
+  const args = [
+    '-s', '--max-time', '12', '--connect-timeout', '8',
+    '--proxy', `${proto}://${p.host}:${p.port}`,
+  ];
+  if (p.user) args.push('--proxy-user', `${p.user}:${p.pass}`);
+  args.push(url);
+  return args;
+}
+
+async function geoIpApi(p, proto) {
+  const r = await execFileP('curl', curlArgs(p, proto, 'http://ip-api.com/json'));
+  const j = JSON.parse(r.stdout);
+  if (j.status !== 'success' || !j.query) throw new Error('ip-api: zlá odpoveď');
+  return { country: j.country, countryCode: j.countryCode, city: j.city, exitIp: j.query };
+}
+
+async function geoIpinfo(p, proto) {
+  const [jsonRes, nameRes] = await Promise.all([
+    execFileP('curl', curlArgs(p, proto, 'https://ipinfo.io/json')),
+    execFileP('curl', curlArgs(p, proto, 'https://ipinfo.io/country')),
+  ]);
+  const j = JSON.parse(jsonRes.stdout);
+  if (!j.ip) throw new Error('ipinfo: zlá odpoveď');
+  const name = nameRes.stdout.trim();
+  return { country: name || j.country || '?', countryCode: j.country || '', city: j.city || '', exitIp: j.ip };
+}
+
+async function geoLookup(p, protoMode) {
+  const protos = protoMode === 'auto' ? ['http', 'socks5h'] : [protoMode];
+  const start = Date.now();
+  let lastErr;
+  for (const proto of protos) {
+    for (const api of [geoIpApi, geoIpinfo]) {
+      try {
+        const geo = await api(p, proto);
+        return { status: 'OK', ...geo, proto, latencyMs: Date.now() - start };
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+  }
+  const code = Number(lastErr?.code);
+  return { status: 'FAIL', reason: CURL_ERRORS[code] || `curl exit ${code || '?'}` };
+}
+
+function getInput() {
+  const args = process.argv.slice(2);
+  const csvIdx = args.indexOf('--csv');
+  const csvPath = csvIdx >= 0 ? (args[csvIdx + 1] ?? 'proxies-results.csv') : null;
+  const protoIdx = args.indexOf('--proto');
+  const protoMode = protoIdx >= 0 ? args[protoIdx + 1] : 'auto';
+  if (protoMode && !['auto', 'http', 'socks5', 'socks5h'].includes(protoMode)) {
+    console.error(`Neznámy protokol: ${protoMode} (auto|http|socks5)`);
+    process.exit(1);
+  }
+  const fileArg = args.find(a => !a.startsWith('--') && a !== args[csvIdx + 1] && a !== args[protoIdx + 1]);
+
+  let text;
+  if (fileArg) {
+    if (!existsSync(fileArg)) {
+      console.error(`Súbor ${fileArg} neexistuje.`);
+      process.exit(1);
+    }
+    text = readFileSync(fileArg, 'utf8');
+  } else if (existsSync('proxies.txt')) {
+    text = readFileSync('proxies.txt', 'utf8');
+  } else {
+    text = readFileSync(0, 'utf8'); // stdin
+  }
+
+  const proxies = text.split('\n').map(parseProxy).filter(Boolean);
+  if (!proxies.length) {
+    console.error('Žiadne proxy na vstupe.');
+    process.exit(1);
+  }
+  return { proxies, csvPath, protoMode: protoMode === 'socks5' ? 'socks5h' : protoMode };
+}
+
+const pad = (s, n) => String(s).padEnd(n);
+
+async function main() {
+  const { proxies, csvPath, protoMode } = getInput();
+  console.log(`Kontrolujem ${proxies.length} proxy (proto: ${protoMode === 'socks5h' ? 'socks5' : protoMode})...\n`);
+
+  const results = [];
+  for (let i = 0; i < proxies.length; i += CONCURRENCY) {
+    const batch = proxies.slice(i, i + CONCURRENCY);
+    results.push(...(await Promise.all(batch.map(p => geoLookup(p, protoMode)))));
+  }
+
+  console.log(pad('proxy', 30) + pad('status', 7) + pad('country', 24) + pad('exit IP', 17) + pad('proto', 7) + 'time');
+  proxies.forEach((p, i) => {
+    const r = results[i];
+    const label = `${p.host}:${p.port}`;
+    if (r.status === 'OK') {
+      console.log(
+        pad(label, 30) + pad('OK', 5) + pad(`${r.country} (${r.countryCode})`, 24) +
+        pad(r.exitIp, 17) + pad(r.proto === 'socks5h' ? 'socks5' : r.proto, 7) +
+        `${(r.latencyMs / 1000).toFixed(1)}s`
+      );
+    } else {
+      console.log(pad(label, 30) + pad('FAIL', 5) + r.reason);
+    }
+  });
+
+  const ok = results.filter(r => r.status === 'OK');
+  const byCountry = {};
+  for (const r of ok) byCountry[r.country] = (byCountry[r.country] || 0) + 1;
+  console.log(`\nZhrnutie: OK ${ok.length} | FAIL ${results.length - ok.length}`);
+  for (const [c, n] of Object.entries(byCountry).sort((a, b) => b[1] - a[1])) {
+    console.log(`  ${c}: ${n}`);
+  }
+
+  if (csvPath) {
+    const head = 'proxy,country,countryCode,city,exitIp,proto,latencyMs,status';
+    const rows = proxies.map((p, i) => {
+      const r = results[i];
+      const c = v => (v ? `"${String(v).replace(/"/g, '""')}"` : '');
+      return `${p.host}:${p.port},${c(r.country)},${c(r.countryCode)},${c(r.city)},${c(r.exitIp)},${c(r.proto)},${r.latencyMs || ''},${r.status === 'OK' ? 'OK' : `"${r.reason}"`}`;
+    });
+    writeFileSync(csvPath, [head, ...rows].join('\n') + '\n');
+    console.log(`\nCSV uložené: ${csvPath}`);
+  }
+}
+
+main().catch(err => {
+  console.error('Chyba:', err.message);
+  process.exit(1);
+});

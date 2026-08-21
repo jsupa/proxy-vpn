@@ -1,0 +1,6 @@
+# Zoznam proxy — jeden na riadok. Formáty:
+#   ip:port:user:pass
+#   ip:port
+#   socks5://user:pass@ip:port
+# Riadky začínajúce # sa preskakujú.
+154.73.250.34:5935:user:pass

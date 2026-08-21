@@ -1,0 +1,4 @@
+.env
+wg-data/
+proxies.txt
+proxies-results.csv
