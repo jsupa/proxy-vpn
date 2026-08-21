@@ -18,7 +18,7 @@ services:
       - "127.0.0.1:51821:51821/tcp"           # web admin — lokálne, cez SSH tunel
     environment:
       - WG_HOST=${VPS_IP}                     # verejná IP VPS
-      - PASSWORD=${PASSWORD}                  # heslo do web adminu
+      - PASSWORD_HASH=${PASSWORD_HASH}        # bcrypt hash (v14+; wgpw 'heslo')
       - PROXY_URL=${PROXY_URL}                # socks5://uzivatel:heslo@ip_egypt_proxy:port
       - WG_DEFAULT_DNS=1.1.1.1                # DNS klientov ide cez tunel (bez leaku)
       - WG_SUBNET=10.8.0.0/24                 # číta start-proxy.sh; musí sedieť s WG_DEFAULT_ADDRESS
